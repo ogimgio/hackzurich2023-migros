@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
-from sentence_transformers import SentenceTransformer, util
 from tqdm import tqdm
 
 from dotenv import load_dotenv
@@ -10,11 +9,22 @@ from langchain.prompts import PromptTemplate
 from langchain.llms import OpenAI
 from langchain import PromptTemplate, LLMChain
 import re 
+from vertexai.language_models import TextEmbeddingModel
+
+from google.cloud import aiplatform
+
+aiplatform.init(project='hackzurich23-8268')
+
+
+
+## Load libraries
 
 load_dotenv()  # take environment variables from .env.
-API_KEY = os.environ['API_KEY']
+#API_KEY = os.environ['API_KEY']
+API_KEY = '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'
 
-model = SentenceTransformer('sentence-transformers/distiluse-base-multilingual-cased-v1')
+#model = SentenceTransformer('sentence-transformers/distiluse-base-multilingual-cased-v1')
+model = TextEmbeddingModel.from_pretrained("textembedding-gecko-multilingual@latest")
 
 llm= OpenAI(openai_api_key=API_KEY)
 
@@ -27,6 +37,7 @@ llm_chain = LLMChain(prompt=meal_template, llm=llm)
 
 
 def get_ingredients_for_recipe_from_llm(question):
+    """This function returns the ingredients of a recipe by using the llm model"""
 
     ingredients=llm_chain.run(question)
 
@@ -52,6 +63,7 @@ def get_ingredients_for_recipe_from_llm(question):
 
 
 def aggregate_data():
+    """Aggregation of sample data"""
     df = pd.read_csv("Migros_case/Shoppin_Cart/trx_202202.csv")
         # Group by user_id and product_id and sum the 'menge'
     grouped = df.groupby(['KundeID', 'ArtikelID']).Menge.sum()
@@ -67,7 +79,8 @@ def aggregate_data():
 
 def create_similarity_matrix():
     """
-    This function create the similarity matrix by performing matrix factorization, reutrning a matrix with similarity across users (depending on the products bought)
+    This function create the similarity matrix by performing matrix factorization, returning a matrix with similarity across users (depending on the products bought),
+    which is the definition of collaborative-filtering
     """
     agg_df = pd.read_csv('Migros_case/triplets.csv')
     
@@ -98,6 +111,7 @@ def create_similarity_matrix():
 
 
 def create_sustainable_popular_dataset():
+    """This function creates the notion of popularity across products"""
     score_df = pd.read_csv('Migros_case/M-Check_packaging.csv', sep=";",encoding='latin-1')
     # drop rows that only contains NaN
     score_df.dropna(how='all', inplace=True)
@@ -124,6 +138,7 @@ def create_sustainable_popular_dataset():
     score_df.to_csv("Migros_case/Score_popularity.csv")
 
 def get_product_from_similar_user(sorted_user_similarities, triplets_df,userID,num_users=1):
+    """This function returns the products of the most similar num_users (based on collaborative filtering)"""
     # get num_users most similar users
     most_similar_users = sorted_user_similarities.iloc[0:num_users].index.tolist()
 
@@ -136,6 +151,7 @@ def get_product_from_similar_user(sorted_user_similarities, triplets_df,userID,n
 
 
 def recommend_similar_users_sustainable_products(predictions_df, userID, score_df, triplets_df, num_recommendations=5):
+    """This function returns the products of the most similar user and then sort them by sustainability score"""
     
     # Get and sort the user's predictions
     sorted_user_similarities = predictions_df.loc[userID].sort_values(ascending=False)
@@ -150,35 +166,37 @@ def recommend_similar_users_sustainable_products(predictions_df, userID, score_d
 
     
     #sort by sustainabiltiy score (the score is in score_df)
-    products_to_recommend = products_to_recommend[np.argsort(score_df[score_df['product_id'].isin(products_to_recommend)]['M-Check Packaging'])]
+    products_to_recommend = products_to_recommend[np.argsort(score_df[score_df['product_id'].isin(products_to_recommend)]['sust_score'])]
 
     if products_to_recommend.size == 0:
         # if there is no product, look into the top 3 similar users
         most_similar_user_products = get_product_from_similar_user(sorted_user_similarities, triplets_df,userID,num_users=3)
         products_to_recommend = np.setdiff1d(most_similar_user_products, userID_products)
-        products_to_recommend = products_to_recommend[np.argsort(score_df[score_df['product_id'].isin(products_to_recommend)]['M-Check Packaging'])]
+        products_to_recommend = products_to_recommend[np.argsort(score_df[score_df['product_id'].isin(products_to_recommend)]['sust_score'])]
 
         if products_to_recommend.size == 0:
         
             # just give popular sustainable products (popular based on popularity, sustainable based on 'mcheckpackaging). Suistanable must have priority
-            products_to_recommend = score_df.sort_values(['M-Check Packaging', 'popularity'], ascending=[False, False])['product_id'].tolist()
+            products_to_recommend = score_df.sort_values(['sust_score', 'popularity'], ascending=[False, False])['product_id'].tolist()
         
     # return top 5
     return products_to_recommend[:num_recommendations]
 
 
 def calculate_allproduct_embedding():
+    """This function calculates the embedding of all products and save it in a dataframe"""
     products = pd.read_csv("Migros_case/products.csv",index_col=0)
     products.index = products.index.astype(str)
     products_names = products.name.tolist()
     
 
-    embeddings = [model.encode(product_name) for product_name in tqdm(products_names,total=len(products_names))]
+    embeddings = [np.mean([np.array(embedding.values) for embedding in model.get_embeddings([product_name])], axis=0) for product_name in tqdm(products_names,total=len(products_names))]
 
     # return dataframe with column product_idx, product_name, product_embedding
     pd.DataFrame({'product_idx':products.index,'product_name':products_names,'product_embedding':embeddings}).to_pickle("Migros_case/product_embeddings.pkl")
 
 def get_similar_product_from_given(choosenID):
+    """This function returns the most similar product based on the embedding of the choosen product, + makes sure to return a product which is more sustainable"""
     scores_df = pd.read_csv('Migros_case/sust_score.csv')
     # as str
     scores_df.product_id = scores_df.product_id.astype(str)
@@ -224,6 +242,7 @@ def get_similar_product_from_given(choosenID):
 
 
 def get_similar_sustainable_product_from_text(text_name):
+    """This function returns the most similar product based on the embedding of a text"""
     scores_df = pd.read_csv('Migros_case/sust_score.csv')
     # as str
     scores_df.product_id = scores_df.product_id.astype(str)
@@ -231,7 +250,7 @@ def get_similar_sustainable_product_from_text(text_name):
     embeddings = pd.read_pickle("Migros_case/product_embeddings.pkl")
     # Randomly pick a product
     # Compute embedding of chosen product
-    choosen = model.encode(text_name)
+    choosen = np.mean([np.array(embedding.values) for embedding in model.get_embeddings([text_name])], axis=0)
 
     similarities = [util.pytorch_cos_sim(choosen, embedding) for embedding in embeddings['product_embedding'].values]
     similarities = np.array([tensor.item() for tensor in similarities])
@@ -247,17 +266,6 @@ def get_similar_sustainable_product_from_text(text_name):
     suggestedRating = suggestedRating.sort_values(by=['sust_score'], ascending=False)[:10]
 
     return suggestedRating.to_dict()
-
-
-def get_product_from_db():
-    #get fish called MSC Seezungenfilets;5
-    fishes = pd.read_csv("Migros_case/Fisch.csv")
-    # get fish called MSC Seezungenfilets;5
-    fish = fishes[fishes['name'] == "MSC Seezungenfilets"]
-
-
-    
-    return 
 
 
 

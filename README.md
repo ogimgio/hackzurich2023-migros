@@ -8,7 +8,7 @@ In detail:
 - Users with similar shopping behavior are clustered together and recommendations are made based on the items they have in common, all depending on the history of purchases.![Alt text](/assets/rs.png?raw=true).
 - Products are clustered based on their similarity (in an embedding space) depending on the type of product and the brand. ![Alt text](/assets/sim.png?raw=true). This way, we are able to reccomend similar user but greener. We make sure that the reccomended products are not higher than 15% of the original price.
 
-### File structure
+### File structure
 
 - cloud_function: api deployed on google cloid that serves the recommendation systems to the frontend
 - notebooks: various notebooks peforming processing of data and testing
